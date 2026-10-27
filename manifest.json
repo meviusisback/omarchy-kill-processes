@@ -1,0 +1,65 @@
+{
+  "$schema": "https://raw.githubusercontent.com/omarchy/omarchy/main/schemas/plugin.json",
+  "schemaVersion": 1,
+  "id": "meviusisback.kill-procs",
+  "name": "Process Pulse",
+  "version": "0.1.0",
+  "author": "meviusisback",
+  "license": "MIT",
+  "repository": "https://github.com/meviusisback/omarchy-kill-processes",
+  "description": "Process manager for the Omarchy bar: processes grouped by application with live CPU and RAM, automatic detection of processes in trouble (busy loops pinned to a core, blocked tasks, zombies, runaway spawn trees) and a one-press TERM/KILL for a whole group. Safe by design: every PID is re-validated against a snapshot (command, start time, owner) before any signal, other users' processes are refused, and a TERM that is ignored escalates to SIGKILL after a grace period.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Process Pulse",
+    "description": "Grouped processes, runaway detection and one-press kill.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaults": {
+      "refreshIntervalSec": 2,
+      "runawaySamples": 5,
+      "sort": "severity",
+      "showTotals": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh (seconds)",
+        "min": 1,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 2,
+        "description": "How often the panel re-reads the processes while it is open. CPU figures need two samples, so they become accurate after one interval. Busy-loop detection fires after about runawaySamples intervals."
+      },
+      {
+        "key": "runawaySamples",
+        "type": "integer",
+        "label": "Runaway detection (samples)",
+        "min": 2,
+        "max": 30,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "Consecutive samples a process must stay above ~95% of a core before it is flagged as a probable busy loop. At the default refresh (2 s) that is about 10 seconds."
+      },
+      {
+        "key": "sort",
+        "type": "string",
+        "label": "Sort",
+        "defaultValue": "severity",
+        "description": "Order of the group list: severity (problems first), cpu, mem or name."
+      },
+      {
+        "key": "showTotals",
+        "type": "boolean",
+        "label": "Show totals in panel",
+        "defaultValue": true,
+        "description": "Show process count, total CPU and RAM in the panel header."
+      }
+    ]
+  }
+}
