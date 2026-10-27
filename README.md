@@ -77,7 +77,9 @@ Settings (bar widget settings): `refreshIntervalSec` (1–30, default 2),
 
 Both helpers are Python stdlib only, spawn with absolute paths, never
 build shell strings, and cap their output (60 groups, 12 processes per
-group, bounded strings). The panel runs them only while it is open.
+group, bounded strings). With the panel open the snapshot refreshes
+every `refreshIntervalSec`; closed, the bar re-checks every 10 s so the
+red badge stays live. One snapshot costs about 40 ms.
 
 ## Tests
 

@@ -17,8 +17,8 @@ Panel {
   ipcTarget: "meviusisback.kill-procs"
   manageIpc: false
 
-  implicitWidth: Math.max(barRow.implicitWidth, 1)
-  implicitHeight: Math.max(barRow.implicitHeight, 1)
+  implicitWidth: Math.max(barBox.implicitWidth, 1)
+  implicitHeight: Math.max(barBox.implicitHeight, 1)
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Color.muted
@@ -155,8 +155,13 @@ Panel {
   }
 
   Timer {
-    interval: Math.max(1, root.refreshIntervalSec) * 1000
-    running: root.opened
+    // The bar badge must stay live with the panel closed too: probe while
+    // open at refreshIntervalSec, otherwise at a calm 10 s cadence.
+    id: refreshTimer
+    interval: root.opened
+      ? Math.max(1, root.refreshIntervalSec) * 1000
+      : Math.max(root.refreshIntervalSec, 10) * 1000
+    running: true
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()
@@ -259,45 +264,34 @@ Panel {
   }
 
   // ---------------------------------------------------------------------- bar
-  Item {
-    id: barRow
-    // Same box as the kit's WidgetButton: 8.5 px each side, 6 px top/bottom,
-    // so the icon is not glued to the neighbouring widget.
-    implicitWidth: barGlyphRow.implicitWidth + 17
-    implicitHeight: barGlyphRow.implicitHeight + 2 * Style.space(6)
+  // BarIconButton gives the glyph the kit's own optical centering, icon slot
+  // and margins, so it lines up with every other widget in the bar.
+  Row {
+    id: barBox
+    spacing: Style.space(3)
 
-    Row {
-      id: barGlyphRow
-      spacing: Style.space(5)
-      anchors.centerIn: parent
-
-      Text {
-        text: "\uf188"
-        textFormat: Text.PlainText
-        color: root.problemCount > 0 ? root.urgent : root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.icon
-        anchors.verticalCenter: parent.verticalCenter
-      }
-      Text {
-        visible: root.problemCount > 0
-        text: String(root.problemCount)
-        textFormat: Text.PlainText
-        color: root.urgent
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-        font.bold: true
-        anchors.verticalCenter: parent.verticalCenter
+    BarIconButton {
+      id: bugBtn
+      text: "\uf188"
+      fontSize: Style.font.icon
+      foreground: root.foreground
+      activeColor: root.urgent
+      active: root.problemCount > 0
+      onPressed: function (button) {
+        if (button === Qt.RightButton) root.refresh()
+        else root.toggle()
       }
     }
 
-    MouseArea {
-      anchors.fill: parent
-      acceptedButtons: Qt.LeftButton | Qt.RightButton
-      onClicked: function (mouse) {
-        if (mouse.button === Qt.RightButton) root.refresh()
-        else root.toggle()
-      }
+    Text {
+      visible: root.problemCount > 0
+      text: String(root.problemCount)
+      textFormat: Text.PlainText
+      color: root.urgent
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+      font.bold: true
+      anchors.verticalCenter: bugBtn.verticalCenter
     }
   }
 
