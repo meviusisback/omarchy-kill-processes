@@ -50,7 +50,9 @@ Panel {
   readonly property int problemCount: Number(issues.total || 0)
 
   function scriptPath(name) {
-    return Qt.resolvedUrl(name).toString().replace(/^file:\/\//, "")
+    var p = Qt.resolvedUrl(name).toString().replace(/^file:\/\//, "")
+    try { p = decodeURIComponent(p) } catch (e) {}
+    return p
   }
 
   // -------------------------------------------------------------- visibility
@@ -169,15 +171,15 @@ Panel {
 
   // --------------------------------------------------------------------- kill
   function askKillGroup(g) {
-    if (root.busy || !g) return
+    if (root.busy || root.confirm !== null || !g) return
     root.confirm = { label: g.label, pids: g.pids, n: g.pids.length, sig: "term" }
   }
   function askKillProc(g, p) {
-    if (root.busy || !g || !p) return
+    if (root.busy || root.confirm !== null || !g || !p) return
     root.confirm = { label: g.label + " · PID " + p.pid, pids: [p.pid], n: 1, sig: "term" }
   }
   function askForceGroup(g) {
-    if (root.busy || !g) return
+    if (root.busy || root.confirm !== null || !g) return
     root.confirm = { label: g.label, pids: g.pids, n: g.pids.length, sig: "kill" }
   }
 
@@ -252,7 +254,7 @@ Panel {
     function toggle(): void { root.toggle() }
     function refresh(): string { root.refresh(); return "ok" }
     function search(q: string): string {
-      root.searchText = String(q || "")
+      root.searchText = String(q || "").slice(0, 128)
       return String(root.visibleGroups.length)
     }
     function kill(pid: int, sig: string): string {
@@ -722,6 +724,15 @@ Panel {
                         }
                         Text {
                           textFormat: Text.PlainText
+                          text: root.fmtAge(p.age)
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          width: Style.space(52)
+                          anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                          textFormat: Text.PlainText
                           text: root.fmtMem(p.rss)
                           color: root.dim
                           font.family: root.fontFamily
@@ -733,7 +744,7 @@ Panel {
                           textFormat: Text.PlainText
                           text: p.preview || p.label || ""
                           elide: Text.ElideRight
-                          width: parent.width - Style.space(64) - Style.space(20) - Style.space(52) - Style.space(58) - Style.space(70) - parent.spacing * 5
+                          width: parent.width - Style.space(64) - Style.space(20) - Style.space(52) - Style.space(52) - Style.space(58) - Style.space(70) - parent.spacing * 6
                           color: p.stateCode === "Z" ? root.urgent : root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption

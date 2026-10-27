@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "id": "meviusisback.kill-procs",
   "name": "Process Pulse",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "meviusisback",
   "license": "MIT",
   "repository": "https://github.com/meviusisback/omarchy-kill-processes",

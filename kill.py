@@ -14,13 +14,14 @@ Usage:
 """
 
 import json
+import math
 import os
 import subprocess
 import sys
 import time
 
 STATE_VERSION = 1
-STATE_MAX_AGE_S = 300.0
+STATE_MAX_AGE_S = 120.0
 KILL_BIN = "/usr/bin/kill"
 MAX_PIDS = 128
 GRACE_S = 2.0
@@ -40,16 +41,19 @@ def load_state(path):
         with open(path, "rb") as handle:
             raw = handle.read(4 * 1024 * 1024)
         data = json.loads(raw.decode("utf-8", "replace"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("version") != STATE_VERSION:
         return None
     if not isinstance(data.get("ids"), dict):
         return None
     try:
-        if abs(float(data.get("ts", 0)) - time.time()) > STATE_MAX_AGE_S:
-            return None
+        ts = float(data.get("ts", 0))
     except (TypeError, ValueError):
+        return None
+    # Bounded both ways: NaN/Inf fail isfinite, a future-dated ts fails
+    # the lower bound instead of widening the acceptance window.
+    if not math.isfinite(ts) or not (0.0 <= time.time() - ts <= STATE_MAX_AGE_S):
         return None
     return data
 
@@ -78,10 +82,28 @@ def live_identity(pid):
                     break
     except (OSError, ValueError, IndexError):
         pass
+    # Re-read the stat line: comm/startticks and uid must come from one
+    # consistent view, or a pid recycled between the reads mixes identities.
     try:
-        return comm, int(fields[19]), uid, fields[0]
+        again = open("/proc/%d/stat" % pid, "rb").read(4096).decode("utf-8", "replace")
+    except OSError:
+        return None
+    l2, r2 = again.find("("), again.rfind(")")
+    if l2 < 0 or r2 < l2 or again[l2 + 1:r2] != comm:
+        return None
+    f2 = again[r2 + 1:].split()
+    if len(f2) < 20 or f2[0] != fields[0]:
+        return None
+    try:
+        return comm, int(f2[19]), uid, f2[0]
     except (ValueError, IndexError):
         return None
+
+
+def norm_comm(text):
+    """Same normalisation probe.clamp_text applies to the snapshot's
+    comm, so a comm carrying whitespace or control bytes still matches."""
+    return " ".join("".join(ch for ch in text if ch.isprintable()).split())
 
 
 def check_pid(pid, snapshot, my_uid):
@@ -100,19 +122,20 @@ def check_pid(pid, snapshot, my_uid):
         return None, "gone"
     comm, startticks, uid, state = now
 
-    if isinstance(expected, list) and len(expected) >= 2:
-        exp_comm = str(expected[0])
-        exp_start = expected[1]
-        exp_uid = expected[2] if len(expected) > 2 else -1
-        if comm != exp_comm:
+    if not (isinstance(expected, list) and len(expected) >= 2):
+        return None, "bad-snapshot-entry"
+    exp_comm = str(expected[0])
+    exp_start = expected[1]
+    exp_uid = expected[2] if len(expected) > 2 else -1
+    if norm_comm(comm) != exp_comm:
+        return None, "recycled-pid"
+    try:
+        if int(exp_start) != startticks:
             return None, "recycled-pid"
-        try:
-            if int(exp_start) != startticks:
-                return None, "recycled-pid"
-        except (TypeError, ValueError):
-            return None, "recycled-pid"
-        if int(exp_uid) != uid:
-            return None, "recycled-pid"
+    except (TypeError, ValueError):
+        return None, "recycled-pid"
+    if int(exp_uid) != uid:
+        return None, "recycled-pid"
 
     if uid != my_uid:
         return None, "not-yours"
@@ -174,6 +197,8 @@ def main(argv=None):
 
     my_uid = os.getuid()
     accepted, refused = [], {}
+    for raw in pids[MAX_PIDS:]:
+        refused[str(raw)[:16]] = "over-cap"
     for raw in pids[:MAX_PIDS]:
         try:
             pid = int(str(raw).strip())
@@ -195,13 +220,23 @@ def main(argv=None):
     if hard != soft and signaled:
         time.sleep(GRACE_S)
 
-        def still_running(pid):
-            """Dead is dead: a zombie is an unreaped corpse, not a survivor."""
-            ident = live_identity(pid)
-            return ident is not None and ident[3] != "Z"
+        def survivors_of(pid):
+            """Alive AND still the process we validated: dead is dead (a
+            zombie is an unreaped corpse), and a recycled pid is refused."""
+            ident, why = check_pid(pid, state["ids"], my_uid)
+            if ident is not None:
+                return "alive" if ident[3] != "Z" else "dead"
+            return "dead" if why in ("gone", "zombie") else "changed"
 
-        survivors = [pid for pid in signaled if still_running(pid)]
+        survivors, lost = [], {}
+        for pid in signaled:
+            verdict = survivors_of(pid)
+            if verdict == "alive":
+                survivors.append(pid)
+            elif verdict == "changed":
+                lost[str(pid)] = "recycled-pid"
         killed = [pid for pid in survivors if send(pid, hard)]
+        refused.update(lost)
         signaled = [pid for pid in signaled if pid not in survivors]
 
     payload = {

@@ -107,7 +107,7 @@ def test_parse_stat():
 
 
 # ----------------------------------------------------------- snapshot tests
-def run_snapshot(monkey_procs, interval=2.0, runaway=5):
+def run_snapshot(monkey_procs, interval=2.0, runaway=5, advance=None):
     """Snapshot with patched readers. monkey_procs: list of proc dicts."""
     by_pid = {p["pid"]: p for p in monkey_procs}
 
@@ -133,7 +133,7 @@ def run_snapshot(monkey_procs, interval=2.0, runaway=5):
             probemod.read_cmdline, probemod.read_cgroup,
             probemod.read_uptime, probemod.read_totals)
     clock = getattr(run_snapshot, "_clock", [1700000000.0])
-    clock[0] += interval                      # time passes between samples
+    clock[0] += advance if advance is not None else interval
     run_snapshot._clock = clock
     orig_time = probemod.time.time
     probemod.time.time = lambda: clock[0]
@@ -400,13 +400,168 @@ def test_still_running_zombie():
         killmod.time.sleep = orig_sleep
 
 
+# ------------------------------------------------- audit regression tests
+def test_cpu_uses_measured_span():
+    print("== snapshot: cpu uses the MEASURED span, not the configured interval ==")
+    with_state_tmp()
+    CG = "0::/app.slice/app-org.span-1.scope"
+    procs = [make_proc(40, "app", cgroup=CG, argv=["/usr/bin/app"], cpu_ticks=0)]
+    run_snapshot(procs, interval=2.0)                      # baseline at T
+    # ONE tick 10 s later with +500 ticks: true CPU = 500/(10*USER_HZ)*100.
+    # The old divisor used the configured interval (2 s) and inflated 5x.
+    procs[0]["utime"] += 500
+    d = run_snapshot(procs, interval=2.0, advance=10.0)
+    p = d["groups"][0]["procs"][0]
+    expected = 500 * 100.0 / (10.0 * probemod.USER_HZ)
+    check("cpu reflects the real 10 s span", abs(p["cpu"] - expected) <= 2.0,
+          "cpu=%s expected~%s" % (p["cpu"], expected))
+    check("not the interval-inflated value", p["cpu"] < 100, p["cpu"])
+
+
+def test_load_state_hardening():
+    print("== load_state: NaN / future / stale / deep-nesting ==")
+    with_state_tmp()
+    me = os.getuid()
+    os.makedirs(os.path.dirname(killmod.state_file()), exist_ok=True)
+
+    def write_state(data=None, raw=None):
+        with open(killmod.state_file(), "w") as fh:
+            fh.write(raw if raw is not None else json.dumps(data))
+
+    write_state({"version": 1, "ts": float("nan"), "ids": {"1": ["a", 1, me]}})
+    check("probe refuses NaN ts", probemod.load_state(probemod.state_file()) == {})
+    check("kill refuses NaN ts", killmod.load_state(killmod.state_file()) is None)
+    write_state({"version": 1, "ts": time.time() + 10 ** 6, "ids": {}})
+    check("probe refuses future ts", probemod.load_state(probemod.state_file()) == {})
+    check("kill refuses future ts", killmod.load_state(killmod.state_file()) is None)
+    write_state({"version": 1, "ts": time.time() - 400, "ids": {}})
+    check("probe refuses stale ts", probemod.load_state(probemod.state_file()) == {})
+    write_state({"version": 1, "ts": time.time() - 30, "ids": {}})
+    check("probe accepts fresh ts", probemod.load_state(probemod.state_file()) != {})
+    write_state(raw="[" * 200000 + "]" * 200000)
+    check("kill survives deep-nesting", killmod.load_state(killmod.state_file()) is None)
+    check("probe survives deep-nesting", probemod.load_state(probemod.state_file()) == {})
+
+
+def test_check_pid_audit_edges():
+    print("== kill: fail-closed shapes + clamped comm comparison ==")
+    uid = 1000
+    orig = killmod.live_identity
+    killmod.live_identity = lambda pid: ("a  b", 1111, uid, "S")
+    try:
+        _, r = killmod.check_pid(55, {"55": 0}, uid)
+        check("scalar entry refused", r == "bad-snapshot-entry", r)
+        _, r = killmod.check_pid(55, {"55": ["only"]}, uid)
+        check("short list refused", r == "bad-snapshot-entry", r)
+        _, r = killmod.check_pid(55, {"55": ["x", 1]}, uid)
+        check("two-element list still compared", r == "recycled-pid", r)
+        ident, r = killmod.check_pid(55, {"55": ["a b", 1111, uid]}, uid)
+        check("whitespace comm matches after normalisation", ident is not None, r)
+    finally:
+        killmod.live_identity = orig
+
+
+def test_hard_kill_revalidates():
+    print("== kill: the SIGKILL step re-validates identity ==")
+    calls = []
+    orig_run, orig_isfile, orig_live = (killmod.subprocess.run,
+                                        killmod.os.path.isfile,
+                                        killmod.live_identity)
+    killmod.os.path.isfile = lambda p: True
+
+    class FakeResult:
+        returncode = 0
+    killmod.subprocess.run = lambda argv, **kw: (calls.append(argv), FakeResult())[1]
+
+    with_state_tmp()
+    os.makedirs(os.path.dirname(killmod.state_file()), exist_ok=True)
+    me = os.getuid()
+    with open(killmod.state_file(), "w") as fh:
+        json.dump({"version": 1, "ts": time.time(), "ids": {"88": ["app", 5, me]}}, fh)
+
+    phase = {"grace": False}
+
+    def fake_live(pid):
+        # alive at validation; after the grace the PID holds a NEW process
+        return ("app", 5, me, "S") if not phase["grace"] else ("app", 99, me, "S")
+
+    orig_sleep = killmod.time.sleep
+    killmod.time.sleep = lambda t: phase.update(grace=True)
+    killmod.live_identity = fake_live
+    import io
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            killmod.main(["--sig", "term", "--pid", "88"])
+        out = json.loads(buf.getvalue().strip().splitlines()[-1])
+        check("recycled survivor refused at hard step",
+              out.get("refused", {}).get("88") == "recycled-pid", out)
+        check("no SIGKILL sent to the impostor", len(calls) == 1, calls)
+        check("not listed as killed", out.get("killed") == [], out)
+    finally:
+        killmod.subprocess.run, killmod.os.path.isfile = orig_run, orig_isfile
+        killmod.live_identity = orig_live
+        killmod.time.sleep = orig_sleep
+
+
+def test_over_cap_pids_reported():
+    print("== kill: pids past MAX_PIDS are reported, not silently dropped ==")
+    calls = []
+    orig_run, orig_isfile, orig_live = (killmod.subprocess.run,
+                                        killmod.os.path.isfile,
+                                        killmod.live_identity)
+    orig_sleep = killmod.time.sleep
+    killmod.os.path.isfile = lambda p: True
+
+    class FakeResult:
+        returncode = 0
+    killmod.subprocess.run = lambda argv, **kw: (calls.append(argv), FakeResult())[1]
+
+    with_state_tmp()
+    os.makedirs(os.path.dirname(killmod.state_file()), exist_ok=True)
+    me = os.getuid()
+    n = killmod.MAX_PIDS + 2
+    ids = {str(1000 + i): ["p", i, me] for i in range(n)}
+    with open(killmod.state_file(), "w") as fh:
+        json.dump({"version": 1, "ts": time.time(), "ids": ids}, fh)
+
+    phase = {"grace": False}
+
+    def fake_live(pid):
+        return None if phase["grace"] else ("p", pid - 1000, me, "S")
+
+    killmod.time.sleep = lambda t: phase.update(grace=True)
+    killmod.live_identity = fake_live
+    argv = ["--sig", "term"]
+    for i in range(n):
+        argv += ["--pid", str(1000 + i)]
+    import io
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            killmod.main(argv)
+        out = json.loads(buf.getvalue().strip().splitlines()[-1])
+        over = [k for k, v in out.get("refused", {}).items() if v == "over-cap"]
+        check("two pids reported over-cap", len(over) == 2, sorted(over))
+        check("first MAX_PIDS still signalled", len(out.get("term", [])) == killmod.MAX_PIDS,
+              len(out.get("term", [])))
+    finally:
+        killmod.subprocess.run, killmod.os.path.isfile = orig_run, orig_isfile
+        killmod.live_identity = orig_live
+        killmod.time.sleep = orig_sleep
+
+
 def main():
     tests = [
         test_app_key, test_names, test_parse_stat,
         test_snapshot_grouping, test_snapshot_cpu_and_runaway,
         test_snapshot_zombie_and_kernel, test_snapshot_swarm_only_apps,
         test_snapshot_caps, test_check_pid, test_send_and_main,
-        test_still_running_zombie,
+        test_still_running_zombie, test_cpu_uses_measured_span,
+        test_load_state_hardening, test_check_pid_audit_edges,
+        test_hard_kill_revalidates, test_over_cap_pids_reported,
     ]
     for t in tests:
         try:

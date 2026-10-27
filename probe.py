@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Process Pulse - snapshot of the running processes, grouped by app.
 
-Reads /proc twice (two ticks apart) and emits one JSON document with:
+Reads /proc once per tick and diffs against the previous tick and emits one JSON document with:
 
   * processes grouped by application (systemd cgroup when available,
     process tree otherwise, wrapper chains collapsed into one row),
@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -29,6 +30,12 @@ import time
 
 STATE_VERSION = 1
 STATE_MAX_AGE_S = 120.0
+# Clock ticks per second: the CPU%% and age maths must divide by the
+# real clock, never by a hardcoded 100.
+try:
+    USER_HZ = float(os.sysconf("SC_CLK_TCK"))
+except (ValueError, OSError, AttributeError):
+    USER_HZ = 100.0
 PID_CAP = 2048
 MAX_GROUPS = 60
 MAX_PROCS_PER_GROUP = 12
@@ -158,14 +165,17 @@ def load_state(path):
         with open(path, "rb") as handle:
             raw = handle.read(4 * 1024 * 1024)
         data = json.loads(raw.decode("utf-8", "replace"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {}
     if not isinstance(data, dict) or data.get("version") != STATE_VERSION:
         return {}
     try:
-        if abs(float(data.get("ts", 0)) - now) > STATE_MAX_AGE_S:
-            return {}
+        ts = float(data.get("ts", 0))
     except (TypeError, ValueError):
+        return {}
+    # Bounded both ways: NaN/Inf fail isfinite, a future-dated ts fails
+    # the lower bound instead of widening the acceptance window.
+    if not math.isfinite(ts) or not (0.0 <= now - ts <= STATE_MAX_AGE_S):
         return {}
     return data
 
@@ -494,7 +504,7 @@ def snapshot(interval, runaway_samples):
             except (TypeError, ValueError):
                 delta, span = 0, 0
             if span > 0.05 and delta >= 0:
-                cpu = max(0.0, delta * 100.0 / (interval * 100.0))
+                cpu = max(0.0, delta * 100.0 / (span * USER_HZ))
         streak = int(old[2]) if isinstance(old, list) and len(old) > 2 else 0
         if cpu >= RUNAWAY_CPU:
             streak += 1
@@ -622,12 +632,12 @@ def snapshot(interval, runaway_samples):
             detailed.append({
                 "pid": proc["pid"],
                 "comm": clamp_text(proc["comm"], NAME_LEN),
-                "state": STATE_NAMES.get(proc["state"], proc["state"]),
+                "state": STATE_NAMES.get(proc["state"], "?"),
                 "stateCode": proc["state"],
                 "cpu": round(proc["cpu"], 1),
                 "rss": round(proc["rss"] / (1024.0 * 1024.0), 1),
                 "threads": proc.get("threads") or 0,
-                "age": round(age if proc is root else max(0.0, (uptime_ticks - proc.get("startticks", 0)) / 100.0), 0),
+                "age": round(age if proc is root else max(0.0, (uptime_ticks - proc.get("startticks", 0)) / USER_HZ), 0),
                 "preview": clamp_text(preview, PREVIEW_LEN),
                 "mine": proc["uid"] == my_uid,
                 "runaway": bool(proc["runaway"]),
