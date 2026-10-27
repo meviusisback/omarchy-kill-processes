@@ -261,13 +261,15 @@ Panel {
   // ---------------------------------------------------------------------- bar
   Item {
     id: barRow
-    implicitWidth: barGlyphRow.implicitWidth
-    implicitHeight: barGlyphRow.implicitHeight
+    // Same box as the kit's WidgetButton: 8.5 px each side, 6 px top/bottom,
+    // so the icon is not glued to the neighbouring widget.
+    implicitWidth: barGlyphRow.implicitWidth + 17
+    implicitHeight: barGlyphRow.implicitHeight + 2 * Style.space(6)
 
     Row {
       id: barGlyphRow
       spacing: Style.space(5)
-      anchors.verticalCenter: parent.verticalCenter
+      anchors.centerIn: parent
 
       Text {
         text: "\uf188"
@@ -371,7 +373,6 @@ Panel {
         contentHeight: contentCol.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
-        flickableDirection: Flickable.Vertical
         interactive: contentHeight > height
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
