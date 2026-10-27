@@ -212,6 +212,9 @@ def test_snapshot_zombie_and_kernel():
     check("zombie issue counted", d["issues"]["zombie"] == 1, d["issues"])
     zg = [g for g in d["groups"] if "zombie" in g["issues"]]
     check("zombie group flagged", len(zg) == 1, labels)
+    check("zombie is info: severity ok", bool(zg) and zg[0]["severity"] == "ok",
+          zg[0]["severity"] if zg else "missing")
+    check("zombie never counts as trouble", d["issues"]["total"] == 0, d["issues"])
     check("kernel thread skipped", d["totals"]["procs"] == 2, d["totals"])
     check("no kworker label", not any("kworker" in l for l in labels), labels)
 

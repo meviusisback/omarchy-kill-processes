@@ -642,21 +642,23 @@ Panel {
                       model: (g.issues || [])
                       delegate: Rectangle {
                         required property string modelData
+                        // red = actionable trouble; zombie is info only
+                        readonly property bool actionable: modelData !== "zombie"
                         width: issueTxt.implicitWidth + Style.space(16)
                         height: Style.space(20)
                         radius: 4
-                        color: Util.alpha(root.urgent, 0.18)
+                        color: Util.alpha(actionable ? root.urgent : root.foreground, actionable ? 0.18 : 0.08)
                         border.width: 1
-                        border.color: Util.alpha(root.urgent, 0.5)
+                        border.color: Util.alpha(actionable ? root.urgent : root.foreground, actionable ? 0.5 : 0.3)
                         Text {
                           id: issueTxt
                           anchors.centerIn: parent
                           textFormat: Text.PlainText
                           text: modelData === "runaway" ? "BUSY LOOP?" : modelData.toUpperCase()
-                          color: root.urgent
+                          color: actionable ? root.urgent : root.dim
                           font.family: root.fontFamily
                           font.pixelSize: Style.font.caption
-                          font.bold: true
+                          font.bold: actionable
                         }
                       }
                     }

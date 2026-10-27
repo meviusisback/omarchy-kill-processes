@@ -21,7 +21,9 @@ you:
   - `BUSY LOOP?` — a process pinned above ~95% of a core for
     `runawaySamples` consecutive samples (default ≈ 10 s);
   - `BLOCKED` — a task stuck in `D` state (uninterruptible wait);
-  - `ZOMBIE` — dead children nobody reaped;
+  - `ZOMBIE` — dead children nobody reaped. Informational only: it never
+    raises the red badge, because a zombie is already dead and clears on
+    its own when its parent exits;
   - `SWARM` — an application spawning a suspicious number of helpers.
 - **Kill that cannot go wrong**:
   - every PID is re-validated against the last snapshot

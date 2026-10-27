@@ -611,8 +611,10 @@ def snapshot(interval, runaway_samples):
         # "spawning out of control" only counts for applications.
         if key.startswith("app:") and len(members) >= SWARM_PROCS:
             issues.append("swarm")
+        # Only actionable states raise the alert. A zombie is already dead:
+        # harmless, and it clears when its parent reaps it, so it stays info.
         severity = "critical" if ("runaway" in issues or "swarm" in issues) else (
-            "warning" if issues else "ok")
+            "warning" if "blocked" in issues else "ok")
 
         detailed = []
         for proc in sorted(members, key=lambda p: (-p["cpu"], -p["rss"], p["pid"]))[:MAX_PROCS_PER_GROUP]:
